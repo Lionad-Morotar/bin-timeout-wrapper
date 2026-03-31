@@ -280,6 +280,169 @@ describe('E2E: bin-timeout-wrapper', () => {
     // Cleanup
     fs.unlinkSync(backupPath);
   });
+
+  // -----------------------------------------------------------------------
+  // 13. Symlinked binary is wrapped and restored correctly (ISSUE-004)
+  // -----------------------------------------------------------------------
+  test('symlinked binary is wrapped and restored correctly', async () => {
+    const realBin = createTestBinary('realbin', '#!/bin/sh\necho "real"\n');
+    const symlinkPath = path.join(tempDir, 'symlink-bin');
+    fs.symlinkSync(realBin, symlinkPath);
+
+    await wrap(symlinkPath, 5);
+    // The wrapper replaces the symlink with a real file
+    expect(isWrapped(symlinkPath)).toBe(true);
+    // The real binary should be untouched (backed up via the symlink path)
+    expect(fs.existsSync(symlinkPath + BACKUP_SUFFIX)).toBe(true);
+
+    const result = await spawnWrapped(symlinkPath);
+    expect(result.stdout.trim()).toBe('real');
+
+    await restore(symlinkPath);
+    // After restore, the symlink should exist again
+    expect(fs.lstatSync(symlinkPath).isSymbolicLink()).toBe(true);
+  });
+
+  // -----------------------------------------------------------------------
+  // 14. SIGTERM is forwarded to child process (ISSUE-003/ISSUE-005)
+  // -----------------------------------------------------------------------
+  test('SIGTERM is forwarded to child process', async () => {
+    const bin = createTestBinary('sigterm-test', '#!/bin/sh\ntrap "" TERM\nsleep 30\n');
+    await wrap(bin, 30); // long timeout so SIGALRM does not interfere
+
+    const child = spawn(bin, [], { env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    // Wait briefly for the child to start and trap TERM
+    await new Promise(r => setTimeout(r, 300));
+
+    child.kill('SIGTERM');
+    const { exitCode, signalCode } = await new Promise(resolve => {
+      child.on('close', (code, signal) => resolve({ exitCode: code, signalCode: signal }));
+    });
+
+    // The wrapper forwards SIGTERM to the child process group and exits(143).
+    // Node may report exitCode=143 (perl exit) or exitCode=null + signalCode='SIGTERM'.
+    const effectiveCode = exitCode ?? (signalCode ? 128 + ({ SIGTERM: 15, SIGINT: 2, SIGKILL: 9 }[signalCode] ?? 0) : 0);
+    expect(effectiveCode).toBe(143);
+  }, 10_000);
+
+  // -----------------------------------------------------------------------
+  // 15. SIGINT is forwarded to child process (ISSUE-003/ISSUE-005)
+  // -----------------------------------------------------------------------
+  test('SIGINT is forwarded to child process', async () => {
+    const bin = createTestBinary('sigint-test', '#!/bin/sh\ntrap "" INT\nsleep 30\n');
+    await wrap(bin, 30); // long timeout so SIGALRM does not interfere
+
+    const child = spawn(bin, [], { env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    // Wait briefly for the child to start and trap INT
+    await new Promise(r => setTimeout(r, 300));
+
+    child.kill('SIGINT');
+    const { exitCode, signalCode } = await new Promise(resolve => {
+      child.on('close', (code, signal) => resolve({ exitCode: code, signalCode: signal }));
+    });
+
+    // The wrapper forwards SIGINT to the child process group and exits(130).
+    const effectiveCode = exitCode ?? (signalCode ? 128 + ({ SIGTERM: 15, SIGINT: 2, SIGKILL: 9 }[signalCode] ?? 0) : 0);
+    expect(effectiveCode).toBe(130);
+  }, 10_000);
+
+  // -----------------------------------------------------------------------
+  // 16. Permission denied on binary path (ISSUE-005)
+  // -----------------------------------------------------------------------
+  test('permission denied on binary path', async () => {
+    const bin = createTestBinary('noperm', '#!/bin/sh\necho hi\n');
+    fs.chmodSync(bin, 0o644); // remove execute permission
+
+    // wrap() calls resolveBinPath which checks executable bit
+    await expect(wrap(bin, 5)).rejects.toThrow('not executable');
+  });
+
+  // -----------------------------------------------------------------------
+  // 17. BIN_TIMEOUT non-numeric via CLI prints clean error (ISSUE-001/ISSUE-005)
+  // -----------------------------------------------------------------------
+  test('BIN_TIMEOUT non-numeric via CLI prints clean error', async () => {
+    const child = spawn('node', ['bin/cli.mjs', '--timeout', 'abc', '--', '/bin/echo'], {
+      cwd: process.cwd(),
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    let stderr = '';
+    child.stderr.on('data', d => stderr += d.toString());
+    const { exitCode } = await new Promise(resolve => {
+      child.on('close', code => resolve({ exitCode: code }));
+    });
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain('Invalid timeout');
+    expect(stderr).not.toContain('at parseTimeout');
+  });
+
+  // -----------------------------------------------------------------------
+  // 18. Exec fails: binary not found after wrap (ISSUE-005)
+  // -----------------------------------------------------------------------
+  test('exec fails: binary not found after wrap (renamed backup)', async () => {
+    const bin = createTestBinary('willmove', '#!/bin/sh\necho hi\n');
+    await wrap(bin, 5);
+
+    // Remove the _backup so the wrapper's exec target is gone
+    const backupPath = bin + BACKUP_SUFFIX;
+    fs.unlinkSync(backupPath);
+
+    const result = await spawnWrapped(bin);
+    // The perl wrapper should fail to exec and report error
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toMatch(/exec/);
+  });
+
+  // -----------------------------------------------------------------------
+  // 19. --help flag prints usage and exits 0 (ISSUE-006)
+  // -----------------------------------------------------------------------
+  test('--help flag prints usage and exits 0', async () => {
+    const child = spawn('node', ['bin/cli.mjs', '--help'], {
+      cwd: process.cwd(),
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    let stderr = '';
+    child.stderr.on('data', d => stderr += d.toString());
+    const { exitCode } = await new Promise(resolve => {
+      child.on('close', code => resolve({ exitCode: code }));
+    });
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain('Usage:');
+    expect(stderr).toContain('--timeout');
+    expect(stderr).toContain('--restore');
+    expect(stderr).toContain('--status');
+  });
+
+  // -----------------------------------------------------------------------
+  // 20. -h flag prints usage and exits 0 (ISSUE-006)
+  // -----------------------------------------------------------------------
+  test('-h flag prints usage and exits 0', async () => {
+    const child = spawn('node', ['bin/cli.mjs', '-h'], {
+      cwd: process.cwd(),
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    let stderr = '';
+    child.stderr.on('data', d => stderr += d.toString());
+    const { exitCode } = await new Promise(resolve => {
+      child.on('close', code => resolve({ exitCode: code }));
+    });
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain('Usage:');
+  });
+
+  // -----------------------------------------------------------------------
+  // 21. Fork failure produces clear error from wrapper (ISSUE-005)
+  // -----------------------------------------------------------------------
+  test('fork failure in wrapper produces clear error', async () => {
+    // We cannot reliably trigger a fork() failure in a test environment.
+    // Instead, verify the perl template contains the fork error handler.
+    const bin = createTestBinary('forkcheck', '#!/bin/sh\necho hi\n');
+    await wrap(bin, 5);
+
+    const wrapperContent = fs.readFileSync(bin, 'utf-8');
+    // Verify the template has the fork error check
+    expect(wrapperContent).toMatch(/defined\(my \$pid = fork\(\)\)/);
+    expect(wrapperContent).toMatch(/or die "fork:/);
+  });
 });
 
 // ---------------------------------------------------------------------------
