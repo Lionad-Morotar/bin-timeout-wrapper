@@ -1,6 +1,6 @@
 # STATE: @lionad/bin-timeout-wrapper
 
-Last activity: 2026-03-31 - Quick task 260401-2um completed
+Last activity: 2026-03-31 - Quick task 260401-3sk completed
 
 ## Current Phase
 Phase 1: Core Implementation (complete)
@@ -18,3 +18,4 @@ None
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260401-2um | Implement bin-timeout-wrapper npm CLI tool | 2026-03-31 | 60029b9 | .planning/quick/260401-2um-implement-bin-timeout-wrapper-npm-cli-to/ |
+| 260401-3sk | Fix 6 QA issues: stack trace leak, signal forwarding, --help flag, tests, design doc | 2026-03-31 | 0140c55 | .planning/quick/260401-3sk-fix-6-qa-issues-stack-trace-leak-cli-arg/ |
