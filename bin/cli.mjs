@@ -27,54 +27,54 @@ async function main() {
   let binPath = null;
   let pastSeparator = false;
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-
-    if (pastSeparator) {
-      if (binPath === null) {
-        binPath = arg;
-      }
-      continue;
-    }
-
-    if (arg === '--') {
-      pastSeparator = true;
-      continue;
-    }
-
-    if (arg === '--restore') {
-      mode = 'restore';
-      continue;
-    }
-
-    if (arg === '--status') {
-      mode = 'status';
-      continue;
-    }
-
-    if (arg === '--timeout') {
-      const next = args[++i];
-      if (next === undefined) {
-        console.error('Error: --timeout requires a value');
-        process.exit(1);
-      }
-      timeout = parseTimeout(next);
-      continue;
-    }
-
-    // Unknown argument before separator
-    console.error(`Error: Unknown argument: ${arg}`);
-    printUsage();
-    process.exit(1);
-  }
-
-  if (!binPath) {
-    console.error('Error: No binary path specified. Use -- /path/to/binary');
-    printUsage();
-    process.exit(1);
-  }
-
   try {
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+
+      if (pastSeparator) {
+        if (binPath === null) {
+          binPath = arg;
+        }
+        continue;
+      }
+
+      if (arg === '--') {
+        pastSeparator = true;
+        continue;
+      }
+
+      if (arg === '--help' || arg === '-h') {
+        printUsage();
+        process.exit(0);
+      }
+
+      if (arg === '--restore') {
+        mode = 'restore';
+        continue;
+      }
+
+      if (arg === '--status') {
+        mode = 'status';
+        continue;
+      }
+
+      if (arg === '--timeout') {
+        const next = args[++i];
+        if (next === undefined) {
+          throw new Error('--timeout requires a value');
+        }
+        timeout = parseTimeout(next);
+        continue;
+      }
+
+      // Unknown argument before separator
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+
+    if (!binPath) {
+      throw new Error('No binary path specified. Use -- /path/to/binary');
+    }
+
     if (mode === 'wrap') {
       const resolvedPath = resolveBinPath(binPath);
       const result = await wrap(resolvedPath, timeout);
