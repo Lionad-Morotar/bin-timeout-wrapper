@@ -60,7 +60,7 @@ exec perl -e '
 
 ```bash
 # 包装二进制（带超时）
-npx @lionad/bin-timeout-wrapper -- /path/to/bin --timeout 5
+npx @lionad/bin-timeout-wrapper --timeout 5 -- /path/to/bin
 
 # 还原原始二进制
 npx @lionad/bin-timeout-wrapper --restore -- /path/to/bin
@@ -71,7 +71,7 @@ npx @lionad/bin-timeout-wrapper --status -- /path/to/bin
 
 ### 行为
 
-1. `-- /path/to/bin --timeout N`:
+1. `--timeout N -- /path/to/bin`:
    - 检查 `/path/to/bin` 是否已是 wrapper（避免重复包装）
    - 将 `/path/to/bin` 重命名为 `/path/to/bin_backup`
    - 在 `/path/to/bin` 创建 shell 脚本，内容为 perl alarm wrapper
@@ -117,7 +117,7 @@ CLI 用 Node.js（因为 npx 就是 Node 生态），但生成的 wrapper 是纯
 
 ## Success Criteria
 
-- `npx @lionad/bin-timeout-wrapper -- /path/to/rg --timeout 5` 后 VS Code 搜索正常
+- `npx @lionad/bin-timeout-wrapper --timeout 5 -- /path/to/rg` 后 VS Code 搜索正常
 - rg 执行超过 5 秒自动被 kill，返回 137
 - `--restore` 能完整还原原始二进制
 - 重复执行 `--` 包装命令不会重复嵌套
