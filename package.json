@@ -1,0 +1,17 @@
+{
+  "name": "@lionad/bin-timeout-wrapper",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Universal binary timeout wrapper - add timeout protection to any binary via npx",
+  "bin": {
+    "bin-timeout-wrapper": "bin/cli.mjs"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^3.1.1"
+  },
+  "keywords": ["timeout", "wrapper", "binary", "npx", "cli"],
+  "license": "MIT"
+}
