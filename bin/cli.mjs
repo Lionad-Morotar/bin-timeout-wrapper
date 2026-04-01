@@ -9,12 +9,14 @@ function printUsage() {
   console.error(`Usage: npx @lionad/bin-timeout-wrapper [options] -- /path/to/binary
 
 Options:
-  --timeout N   Timeout in seconds (default: 5)
-  --restore     Restore the original binary
-  --status      Check wrap status of the binary
+  --timeout N     Timeout in seconds (default: 5)
+  --enable-log    Enable execution logging to .bin-timeout-wrapper.log
+  --restore       Restore the original binary
+  --status        Check wrap status of the binary
 
 Examples:
   npx @lionad/bin-timeout-wrapper --timeout 5 -- /usr/local/bin/rg
+  npx @lionad/bin-timeout-wrapper --timeout 10 --enable-log -- /usr/local/bin/rg
   npx @lionad/bin-timeout-wrapper --restore -- /usr/local/bin/rg
   npx @lionad/bin-timeout-wrapper --status -- /usr/local/bin/rg`);
 }
@@ -24,6 +26,7 @@ async function main() {
 
   let mode = 'wrap';
   let timeout = 5;
+  let enableLog = false;
   let binPath = null;
   let pastSeparator = false;
 
@@ -58,6 +61,11 @@ async function main() {
         continue;
       }
 
+      if (arg === '--enable-log') {
+        enableLog = true;
+        continue;
+      }
+
       if (arg === '--timeout') {
         const next = args[++i];
         if (next === undefined) {
@@ -77,10 +85,13 @@ async function main() {
 
     if (mode === 'wrap') {
       const resolvedPath = resolveBinPath(binPath);
-      const result = await wrap(resolvedPath, timeout);
+      const result = await wrap(resolvedPath, timeout, enableLog);
       console.log(`Wrapped: ${result.binPath}`);
       console.log(`  Backup: ${result.backupPath}`);
       console.log(`  Timeout: ${result.timeout}s (override with BIN_TIMEOUT env var)`);
+      if (result.enableLog) {
+        console.log(`  Log: enabled (.bin-timeout-wrapper.log)`);
+      }
     } else if (mode === 'restore') {
       const resolvedPath = resolveBinPath(binPath);
       const result = await restore(resolvedPath);
@@ -94,6 +105,10 @@ async function main() {
         console.log(`  Binary: ${result.binPath}`);
         console.log(`  Timeout: ${result.timeout}s (override with BIN_TIMEOUT env var)`);
         console.log(`  Backup: ${result.backupPath}`);
+        if (result.createdAt) {
+          const formatted = new Date(result.createdAt).toLocaleString();
+          console.log(`  Created at: ${formatted}`);
+        }
       } else {
         console.log(`Status: not wrapped`);
         console.log(`  Binary: ${result.binPath}`);
