@@ -6,6 +6,8 @@ One-command timeout protection for any binary. Transparent, reversible, zero con
 npx @lionad/bin-timeout-wrapper -- /path/to/unstable-binary
 ```
 
+**important**: Mac only, relies on `perl alarm` for timeouts.
+
 ## Why
 
 主要用来修复我的 Mac 的一个异常问题。
@@ -64,11 +66,18 @@ BIN_TIMEOUT=10 rg "search pattern"
 ## Real-World Example
 
 ```bash
-# Wrap VS Code's bundled ripgrep
-node bin/cli.mjs -- "/Applications/Visual Studio Code.app/Contents/Resources/app/node_modules/@vscode/ripgrep/bin/rg"
-```
+# working too long...
+rg -j12 -uuu --max-depth 999 "." ~/Library
 
-VS Code calls rg via `spawn()` — it doesn't care that the binary is now a shell script. The wrapper transparently proxies all arguments, stdin, stdout, and stderr. If rg hangs beyond 5 seconds, it gets killed automatically.
+# so wrap it with a timeout 5s for testing
+npx @lionad/bin-timeout-wrapper --timeout 1 -- $(which rg)
+
+# now it died after 5s instead of "working forever"
+rg -j12 -uuu --max-depth 999 "." ~/Library
+
+# restore it back to normal if you want
+npx @lionad/bin-timeout-wrapper --restore -- $(which rg)
+```
 
 ## How It Works
 
