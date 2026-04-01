@@ -912,3 +912,170 @@ describe('State transitions', () => {
     expect(result.stdout.trim()).toBe('ok');
   });
 });
+
+// -----------------------------------------------------------------------------
+// New Feature Tests: --enable-log and createdAt
+// -----------------------------------------------------------------------------
+
+describe('New Features: --enable-log and createdAt', () => {
+  beforeEach(() => { createTempDir(); });
+  afterEach(() => { cleanupTempDir(); });
+
+  // -----------------------------------------------------------------------
+  // --enable-log: creates log file on execution
+  // -----------------------------------------------------------------------
+  test('wrap with --enable-log creates log file on execution', async () => {
+    const bin = createTestBinary('loggedbin', '#!/bin/sh\necho "hello"\n');
+    await wrap(bin, 5, true);  // enableLog = true
+
+    // Execute the wrapped binary
+    const result = await spawnWrapped(bin);
+    expect(result.exitCode).toBe(0);
+
+    // Check log file exists
+    const logPath = path.join(tempDir, '.bin-timeout-wrapper.log');
+    expect(fs.existsSync(logPath)).toBe(true);
+
+    // Check log format (milliseconds timestamp)
+    const logContent = fs.readFileSync(logPath, 'utf-8');
+    expect(logContent).toMatch(/^\[\d{13}\] executed\n$/);
+  });
+
+  // -----------------------------------------------------------------------
+  // --enable-log: multiple executions append to log
+  // -----------------------------------------------------------------------
+  test('multiple executions append to log file', async () => {
+    const bin = createTestBinary('multiexec', '#!/bin/sh\necho "run"\n');
+    await wrap(bin, 5, true);
+
+    // Execute 3 times
+    await spawnWrapped(bin);
+    await spawnWrapped(bin);
+    await spawnWrapped(bin);
+
+    const logPath = path.join(tempDir, '.bin-timeout-wrapper.log');
+    const logContent = fs.readFileSync(logPath, 'utf-8');
+    const lines = logContent.trim().split('\n');
+    expect(lines.length).toBe(3);
+    expect(lines[0]).toMatch(/^\[\d{13}\] executed$/);
+  });
+
+  // -----------------------------------------------------------------------
+  // without --enable-log: no log file created
+  // -----------------------------------------------------------------------
+  test('wrap without --enable-log does not create log file', async () => {
+    const bin = createTestBinary('nologbin', '#!/bin/sh\necho "hello"\n');
+    await wrap(bin, 5, false);  // enableLog = false (default)
+
+    const result = await spawnWrapped(bin);
+    expect(result.exitCode).toBe(0);
+
+    const logPath = path.join(tempDir, '.bin-timeout-wrapper.log');
+    expect(fs.existsSync(logPath)).toBe(false);
+  });
+
+  // -----------------------------------------------------------------------
+  // CLI: --enable-log flag works
+  // -----------------------------------------------------------------------
+  test('CLI --enable-log flag creates log file', async () => {
+    const bin = createTestBinary('clilog', '#!/bin/sh\necho "cli"\n');
+
+    const result = await spawnCLI(['--timeout', '5', '--enable-log', '--', bin]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('Log: enabled');
+
+    // Execute and check log
+    await spawnWrapped(bin);
+    const logPath = path.join(tempDir, '.bin-timeout-wrapper.log');
+    expect(fs.existsSync(logPath)).toBe(true);
+  });
+
+  // -----------------------------------------------------------------------
+  // status: returns createdAt for wrapped binary
+  // -----------------------------------------------------------------------
+  test('status returns createdAt for wrapped binary', async () => {
+    const bin = createTestBinary('withtime', '#!/bin/sh\necho "hi"\n');
+    const beforeWrap = Date.now();
+    await wrap(bin, 5);
+    const afterWrap = Date.now();
+
+    const st = await status(bin);
+    expect(st.wrapped).toBe(true);
+    expect(st.createdAt).toBeDefined();
+    expect(st.createdAt).toBeInstanceOf(Date);
+
+    // Verify the timestamp is reasonable (between before and after wrap)
+    const createdTime = st.createdAt.getTime();
+    expect(createdTime).toBeGreaterThanOrEqual(beforeWrap - 1000); // 1s buffer
+    expect(createdTime).toBeLessThanOrEqual(afterWrap + 1000);
+  });
+
+  // -----------------------------------------------------------------------
+  // status: createdAt is null for unwrapped binary
+  // -----------------------------------------------------------------------
+  test('status returns null createdAt for unwrapped binary', async () => {
+    const bin = createTestBinary('notime', '#!/bin/sh\necho "hi"\n');
+
+    const st = await status(bin);
+    expect(st.wrapped).toBe(false);
+    expect(st.createdAt).toBeNull();
+  });
+
+  // -----------------------------------------------------------------------
+  // CLI status: shows createdAt in output
+  // -----------------------------------------------------------------------
+  test('CLI --status shows created at timestamp', async () => {
+    const bin = createTestBinary('clitime', '#!/bin/sh\necho "hi"\n');
+    await wrap(bin, 5);
+
+    const result = await spawnCLI(['--status', '--', bin]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('Created at:');
+    expect(result.stdout).toMatch(/\d{4}\/\d{1,2}\/\d{1,2}/); // Date format like 2026/4/1
+  });
+
+  // -----------------------------------------------------------------------
+  // wrapper header: contains log marker comment
+  // -----------------------------------------------------------------------
+  test('wrapper header contains log marker comment', async () => {
+    const bin = createTestBinary('headercheck', '#!/bin/sh\necho "hi"\n');
+    await wrap(bin, 5, true);
+
+    const wrapperContent = fs.readFileSync(bin, 'utf-8');
+    expect(wrapperContent).toContain('# Log: enabled');
+  });
+
+  // -----------------------------------------------------------------------
+  // wrapper header: shows disabled when log is off
+  // -----------------------------------------------------------------------
+  test('wrapper header shows disabled when log is off', async () => {
+    const bin = createTestBinary('headeroff', '#!/bin/sh\necho "hi"\n');
+    await wrap(bin, 5, false);
+
+    const wrapperContent = fs.readFileSync(bin, 'utf-8');
+    expect(wrapperContent).toContain('# Log: disabled');
+  });
+
+  // -----------------------------------------------------------------------
+  // --enable-log: timeout is recorded in log
+  // -----------------------------------------------------------------------
+  test('timeout is recorded in log with millisecond timestamp', async () => {
+    const bin = createTestBinary('timeoutlog', '#!/bin/sh\nsleep 30\n');
+    await wrap(bin, 2, true);  // 2 second timeout
+
+    // Execute and let it timeout
+    const { result, elapsed } = await timeAsync(() => spawnWrapped(bin));
+    expect(result.exitCode).toBe(137);  // SIGKILL
+    expect(elapsed).toBeLessThan(5_000);
+
+    // Check log contains timeout entry
+    const logPath = path.join(tempDir, '.bin-timeout-wrapper.log');
+    expect(fs.existsSync(logPath)).toBe(true);
+
+    const logContent = fs.readFileSync(logPath, 'utf-8');
+    const lines = logContent.trim().split('\n');
+    // Last line should be the timeout entry
+    const lastLine = lines[lines.length - 1];
+    expect(lastLine).toMatch(/^\[\d{13}\] timeout$/);
+  }, 10_000);
+});
