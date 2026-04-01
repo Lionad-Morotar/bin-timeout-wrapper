@@ -50,7 +50,26 @@ Removes the wrapper and restores the original binary from backup.
 npx @lionad/bin-timeout-wrapper --status -- /path/to/binary
 ```
 
-Checks whether a binary is currently wrapped.
+Checks whether a binary is currently wrapped, showing:
+- Wrap status (wrapped / not wrapped)
+- Timeout setting
+- Backup file location
+- Creation time (when wrapped)
+
+### Enable Logging（启用执行日志）
+
+```bash
+npx @lionad/bin-timeout-wrapper --timeout 5 --enable-log -- /path/to/binary
+```
+
+When enabled, the wrapper logs all executions to `.bin-timeout-wrapper.log` in the same directory as the backup file:
+
+```
+[1775034123456] executed
+[1775034123457] timeout
+```
+
+Timestamps are millisecond Unix timestamps. The log file is created on first execution and appended to on subsequent runs.
 
 ## Configuration
 
@@ -91,10 +110,11 @@ The wrapper script itself is ~10 lines of POSIX sh + perl — both standard on m
 ## Options
 
 ```
---timeout N    Timeout in seconds (default: 5)
---restore      Restore the original binary
---status       Check wrap status
---help         Show usage information
+--timeout N      Timeout in seconds (default: 5)
+--enable-log     Enable execution logging to .bin-timeout-wrapper.log
+--restore        Restore the original binary
+--status         Check wrap status
+--help           Show usage information
 ```
 
 ## License
