@@ -6,7 +6,7 @@ import { isWrapped, resolveBinPath, parseTimeout, BACKUP_SUFFIX } from '../lib/u
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -77,6 +77,23 @@ function spawnWrapped(binPath, args = [], env = {}) {
       clearTimeout(timeout);
       reject(err);
     });
+  });
+}
+
+/**
+ * Spawn the CLI with given arguments, capture stdout/stderr, return results.
+ */
+function spawnCLI(args) {
+  return new Promise((resolve) => {
+    const child = spawn('node', ['bin/cli.mjs', ...args], {
+      cwd: process.cwd(),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    child.on('close', (code) => resolve({ exitCode: code ?? null, stdout, stderr }));
   });
 }
 
@@ -513,5 +530,385 @@ describe('Utils: isWrapped', () => {
       }
       cleanupTempDir();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CLI integration tests
+// ---------------------------------------------------------------------------
+
+describe('CLI integration', () => {
+  beforeEach(() => { createTempDir(); });
+  afterEach(() => { cleanupTempDir(); });
+
+  test('--restore via CLI restores wrapped binary', async () => {
+    const bin = createTestBinary('clirestore', '#!/bin/sh\necho "original"\nexit 7\n');
+
+    // Wrap via CLI
+    const wrapResult = await spawnCLI(['--timeout', '5', '--', bin]);
+    expect(wrapResult.exitCode).toBe(0);
+    expect(wrapResult.stdout).toContain('Wrapped:');
+
+    // Restore via CLI
+    const restoreResult = await spawnCLI(['--restore', '--', bin]);
+    expect(restoreResult.exitCode).toBe(0);
+    expect(restoreResult.stdout).toContain('Restored:');
+    expect(restoreResult.stdout).toContain('From backup:');
+
+    // Verify binary works
+    const result = await spawnWrapped(bin);
+    expect(result.exitCode).toBe(7);
+    expect(result.stdout.trim()).toBe('original');
+  });
+
+  test('--status via CLI reports wrapped and unwrapped state', async () => {
+    const bin = createTestBinary('clistatus', '#!/bin/sh\necho hi\n');
+
+    // Status before wrap
+    const before = await spawnCLI(['--status', '--', bin]);
+    expect(before.exitCode).toBe(0);
+    expect(before.stdout).toContain('Status: not wrapped');
+
+    // Wrap
+    await spawnCLI(['--timeout', '7', '--', bin]);
+
+    // Status after wrap
+    const after = await spawnCLI(['--status', '--', bin]);
+    expect(after.exitCode).toBe(0);
+    expect(after.stdout).toContain('Status: wrapped');
+    expect(after.stdout).toContain('Timeout: 7s');
+    expect(after.stdout).toContain('Backup:');
+
+    // Restore
+    await spawnCLI(['--restore', '--', bin]);
+
+    // Status after restore
+    const restored = await spawnCLI(['--status', '--', bin]);
+    expect(restored.stdout).toContain('Status: not wrapped');
+  });
+
+  test('--timeout with valid value via CLI', async () => {
+    const bin = createTestBinary('clitimeout', '#!/bin/sh\necho hi\n');
+    const result = await spawnCLI(['--timeout', '3', '--', bin]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('Timeout: 3s');
+  });
+
+  test('--timeout without value prints clean error', async () => {
+    // When --timeout is last arg before --, "--" becomes the value
+    const result = await spawnCLI(['--timeout', '--', '/bin/echo']);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('Invalid timeout');
+    expect(result.stderr).not.toContain('at main');
+  });
+
+  test('unknown argument prints clean error', async () => {
+    const result = await spawnCLI(['--foobar', '--', '/bin/echo']);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('Unknown argument: --foobar');
+  });
+
+  test('no binary path prints error with hint', async () => {
+    const result = await spawnCLI([]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('No binary path specified');
+    // Error message includes usage hint
+    expect(result.stderr).toContain('-- /path/to/binary');
+  });
+
+  test('CLI wrap mode outputs formatted result', async () => {
+    const bin = createTestBinary('cliwrap', '#!/bin/sh\necho hi\n');
+    const result = await spawnCLI(['--timeout', '5', '--', bin]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('Wrapped:');
+    expect(result.stdout).toContain('Backup:');
+    expect(result.stdout).toContain('Timeout: 5s');
+  });
+
+  test('--status on nonexistent binary prints clean error', async () => {
+    const result = await spawnCLI(['--status', '--', '/nonexistent/binary']);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('Binary not found');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Edge case tests
+// ---------------------------------------------------------------------------
+
+describe('Edge cases', () => {
+  beforeEach(() => { createTempDir(); });
+  afterEach(() => { cleanupTempDir(); });
+
+  test('status() with wrapper missing timeout comment returns null timeout', async () => {
+    const bin = createTestBinary('notimeoutcomment', '#!/bin/sh\necho hi\n');
+
+    // Wrap normally
+    await wrap(bin, 5);
+
+    // Remove the timeout comment line from the wrapper
+    let content = fs.readFileSync(bin, 'utf-8');
+    content = content.replace(/# Timeout: \d+s.*\n/, '');
+    fs.writeFileSync(bin, content, 'utf-8');
+
+    const result = await status(bin);
+    expect(result.wrapped).toBe(true);
+    expect(result.timeout).toBeNull();
+  });
+
+  test('isWrapped with unreadable file returns false', () => {
+    const bin = createTestBinary('unreadable', '#!/bin/sh\necho hi\n');
+    fs.chmodSync(bin, 0o000);
+
+    // isWrapped should return false, not throw
+    expect(isWrapped(bin)).toBe(false);
+
+    // Restore permissions for cleanup
+    fs.chmodSync(bin, 0o755);
+  });
+
+  test('parseTimeout accepts scientific notation as valid integer', () => {
+    // Number('1e2') = 100, which is a valid positive integer
+    expect(parseTimeout('1e2')).toBe(100);
+  });
+
+  test('parseTimeout accepts float-looking integer strings', () => {
+    // Number('5.0') = 5, which is a valid positive integer
+    expect(parseTimeout('5.0')).toBe(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// State transition edge cases
+// ---------------------------------------------------------------------------
+
+describe('State transitions', () => {
+  beforeEach(() => { createTempDir(); });
+  afterEach(() => { cleanupTempDir(); });
+
+  // -----------------------------------------------------------------------
+  // Re-wrap with different timeout: should be rejected
+  // -----------------------------------------------------------------------
+  test('wrap with timeout 5, then CLI wrap with timeout 10 is rejected', async () => {
+    const bin = createTestBinary('rewrap', '#!/bin/sh\necho hi\n');
+
+    // First wrap succeeds
+    const first = await spawnCLI(['--timeout', '5', '--', bin]);
+    expect(first.exitCode).toBe(0);
+    expect(first.stdout).toContain('Timeout: 5s');
+
+    // Second wrap with different timeout should fail
+    const second = await spawnCLI(['--timeout', '10', '--', bin]);
+    expect(second.exitCode).toBe(1);
+    expect(second.stderr).toContain('Already wrapped');
+
+    // Verify original timeout is unchanged
+    const st = await spawnCLI(['--status', '--', bin]);
+    expect(st.stdout).toContain('Timeout: 5s');
+  });
+
+  // -----------------------------------------------------------------------
+  // Wrap → restore → re-wrap with different timeout: full cycle
+  // -----------------------------------------------------------------------
+  test('wrap → restore → re-wrap with different timeout works', async () => {
+    const bin = createTestBinary('cycle', '#!/bin/sh\necho "v1"\n');
+
+    // Wrap with timeout 3
+    const w1 = await spawnCLI(['--timeout', '3', '--', bin]);
+    expect(w1.exitCode).toBe(0);
+    expect(w1.stdout).toContain('Timeout: 3s');
+
+    // Restore
+    const r1 = await spawnCLI(['--restore', '--', bin]);
+    expect(r1.exitCode).toBe(0);
+
+    // Re-wrap with timeout 10
+    const w2 = await spawnCLI(['--timeout', '10', '--', bin]);
+    expect(w2.exitCode).toBe(0);
+    expect(w2.stdout).toContain('Timeout: 10s');
+
+    // Verify new timeout is active
+    const st = await spawnCLI(['--status', '--', bin]);
+    expect(st.stdout).toContain('Timeout: 10s');
+
+    // Binary still works after full cycle
+    const result = await spawnWrapped(bin);
+    expect(result.stdout.trim()).toBe('v1');
+  });
+
+  // -----------------------------------------------------------------------
+  // Double restore: second restore fails cleanly
+  // -----------------------------------------------------------------------
+  test('double restore: second restore fails', async () => {
+    const bin = createTestBinary('dblrestore', '#!/bin/sh\necho hi\n');
+
+    await spawnCLI(['--timeout', '5', '--', bin]);
+
+    // First restore succeeds
+    const r1 = await spawnCLI(['--restore', '--', bin]);
+    expect(r1.exitCode).toBe(0);
+    expect(r1.stdout).toContain('Restored:');
+
+    // Second restore fails
+    const r2 = await spawnCLI(['--restore', '--', bin]);
+    expect(r2.exitCode).toBe(1);
+    expect(r2.stderr).toContain('No backup found');
+  });
+
+  // -----------------------------------------------------------------------
+  // Restore on never-wrapped binary fails
+  // -----------------------------------------------------------------------
+  test('restore on never-wrapped binary fails', async () => {
+    const bin = createTestBinary('neverwrap', '#!/bin/sh\necho hi\n');
+
+    const result = await spawnCLI(['--restore', '--', bin]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('No backup found');
+  });
+
+  // -----------------------------------------------------------------------
+  // --restore combined with --timeout: restore wins, timeout ignored
+  // -----------------------------------------------------------------------
+  test('--restore --timeout 99: restore wins, timeout is ignored', async () => {
+    const bin = createTestBinary('restoretimeout', '#!/bin/sh\necho "orig"\n');
+
+    // Wrap first
+    await spawnCLI(['--timeout', '5', '--', bin]);
+
+    // Restore with --timeout (should just restore, timeout has no effect)
+    const result = await spawnCLI(['--restore', '--timeout', '99', '--', bin]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('Restored:');
+
+    // Binary is restored
+    const st = await spawnCLI(['--status', '--', bin]);
+    expect(st.stdout).toContain('not wrapped');
+  });
+
+  // -----------------------------------------------------------------------
+  // Wrap, delete backup, restore fails: partial corruption
+  // -----------------------------------------------------------------------
+  test('wrap then delete backup: restore fails, binary still wrapped', async () => {
+    const bin = createTestBinary('nobackup', '#!/bin/sh\necho hi\n');
+    await wrap(bin, 5);
+
+    // Delete the backup file
+    const backupPath = bin + BACKUP_SUFFIX;
+    fs.unlinkSync(backupPath);
+
+    // Restore should fail
+    await expect(restore(bin)).rejects.toThrow('No backup found');
+
+    // Binary is still wrapped (wrapper still in place)
+    expect(isWrapped(bin)).toBe(true);
+  });
+
+  // -----------------------------------------------------------------------
+  // Wrap, delete wrapper, wrap again: blocked by backup collision
+  // -----------------------------------------------------------------------
+  test('wrap then delete wrapper: second wrap blocked by existing backup', async () => {
+    const bin = createTestBinary('delwrap', '#!/bin/sh\necho hi\n');
+    await wrap(bin, 5);
+
+    // Remove the wrapper but leave the backup
+    fs.unlinkSync(bin);
+
+    // The original binary content is in the backup, so the path no longer exists.
+    // wrap() should fail because resolveBinPath can't find the file.
+    // But if we recreate a file at that path...
+    fs.writeFileSync(bin, '#!/bin/sh\necho new\n', 'utf-8');
+    fs.chmodSync(bin, 0o755);
+
+    // Now isWrapped(bin) is false (new file), but backup exists.
+    // wrap() should reject with "Backup already exists".
+    await expect(wrap(bin, 10)).rejects.toThrow('Backup already exists');
+  });
+
+  // -----------------------------------------------------------------------
+  // Status on partially corrupted state (backup exists, wrapper missing)
+  // -----------------------------------------------------------------------
+  test('status on corrupted state: backup exists but wrapper deleted', async () => {
+    const bin = createTestBinary('corrupt', '#!/bin/sh\necho hi\n');
+    await wrap(bin, 5);
+
+    // Delete the wrapper, keep backup
+    fs.unlinkSync(bin);
+
+    // status() calls resolveBinPath which fails if file doesn't exist
+    const result = await spawnCLI(['--status', '--', bin]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('Binary not found');
+  });
+
+  // -----------------------------------------------------------------------
+  // Wrap with default timeout (no --timeout flag)
+  // -----------------------------------------------------------------------
+  test('CLI wrap without --timeout uses default 5s', async () => {
+    const bin = createTestBinary('defaultt', '#!/bin/sh\necho hi\n');
+
+    // No --timeout flag
+    const result = await spawnCLI(['--', bin]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('Timeout: 5s');
+
+    // Verify via status
+    const st = await spawnCLI(['--status', '--', bin]);
+    expect(st.stdout).toContain('Timeout: 5s');
+  });
+
+  // -----------------------------------------------------------------------
+  // Wrap → restore → wrap → restore: full double cycle
+  // -----------------------------------------------------------------------
+  test('wrap → restore → wrap → restore: double cycle preserves binary', async () => {
+    const bin = createTestBinary('dblcycle', '#!/bin/sh\necho "persist"\nexit 33\n');
+
+    // Cycle 1
+    await wrap(bin, 3);
+    await restore(bin);
+
+    // Cycle 2 with different timeout
+    await wrap(bin, 8);
+    await restore(bin);
+
+    // Binary content should be untouched
+    const result = await spawnWrapped(bin);
+    expect(result.exitCode).toBe(33);
+    expect(result.stdout.trim()).toBe('persist');
+  });
+
+  // -----------------------------------------------------------------------
+  // BIN_TIMEOUT invalid value via runtime: perl rejects it
+  // -----------------------------------------------------------------------
+  test('BIN_TIMEOUT with non-numeric value at runtime: wrapper exits with error', async () => {
+    const bin = createTestBinary('badenv', '#!/bin/sh\necho hi\n');
+    await wrap(bin, 5);
+
+    const result = await spawnWrapped(bin, [], { BIN_TIMEOUT: 'not-a-number' });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain('Invalid BIN_TIMEOUT');
+  });
+
+  // -----------------------------------------------------------------------
+  // BIN_TIMEOUT negative value at runtime: perl rejects it
+  // -----------------------------------------------------------------------
+  test('BIN_TIMEOUT with negative value at runtime: wrapper exits with error', async () => {
+    const bin = createTestBinary('negenv', '#!/bin/sh\necho hi\n');
+    await wrap(bin, 5);
+
+    const result = await spawnWrapped(bin, [], { BIN_TIMEOUT: '-1' });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain('Invalid BIN_TIMEOUT');
+  });
+
+  // -----------------------------------------------------------------------
+  // BIN_TIMEOUT very large value: wrapper still runs (no overflow)
+  // -----------------------------------------------------------------------
+  test('BIN_TIMEOUT with very large value: binary runs normally', async () => {
+    const bin = createTestBinary('largeenv', '#!/bin/sh\necho "ok"\n');
+    await wrap(bin, 5);
+
+    const result = await spawnWrapped(bin, [], { BIN_TIMEOUT: '999999' });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe('ok');
   });
 });
