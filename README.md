@@ -10,13 +10,13 @@ npx @lionad/bin-timeout-wrapper -- /path/to/unstable-binary
 
 ## Why
 
-主要用来修复我的 Mac 的一个异常问题。
+主要用来修复我 Mac 里的一个异常问题。
 
-VSCode 曾有个困扰我许久的问题，他会调用 rg（ripgrep）来做全局搜索，但似乎偶尔会死循环，吃满我的 CPU。
+VSCode 会调用 rg（ripgrep）做全局搜索，但偶尔会死循环吃满 CPU。
 
-但通过设置 followSymlink 设置没有效果，而 rg 死循环出现得很随机，所以我不想花大量时间做插件的二分排查。
+通过设置 followSymlink 没有效果，而死循环出现得很随机，所以我不想花大量时间做插件的二分排查。
 
-鉴于没有操作系统级别的 debug 技能，所以我才使用这种“兽医手术”的下策：在 rg 上套一层超时保护，超时后自动 kill。
+鉴于没有操作系统级别的 debug 技能，最终选择使用这种“兽医手术”：在 rg 上套一层超时保护，超时后自动 kill。
 
 ## Usage
 
